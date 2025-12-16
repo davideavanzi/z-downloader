@@ -3,19 +3,19 @@ import logging
 import re
 import argparse
 import sys
+import getpass
+import os
 
 parser = argparse.ArgumentParser(
 	prog="Z-Downloader",
 	description="Download payslip from Zucchetti platform"
 	)
 
-parser.add_argument("username", help="Zucchetti username")
-parser.add_argument("password", help="Zucchetti password")
-parser.add_argument("org", help="Organization, first element of the URI (i.e., saas.zucchetti.it/<organization>/))")
-
-
-hostbase = "https://saas.hrzucchetti.it"
-
+parser.add_argument("-u", "--username", required=True, help="Zucchetti username")
+parser.add_argument("-o", "--org", required=True, help="Organization, first element of the URI (i.e., saas.zucchetti.it/<organization>/))")
+parser.add_argument("-p", "--password", help="Zucchetti password (if not provided, will prompt securely)")
+parser.add_argument("-d", "--output-dir", default=".", help="Output directory for downloaded files (default: current directory)")
+parser.add_argument("-H", "--host", default="https://saas.zucchetti.it", help="Base URL of the Zucchetti portal (default: https://saas.zucchetti.it)")
 headers = {
     	"Content-Type": "application/x-www-form-urlencoded",
 }
@@ -26,7 +26,7 @@ logging.basicConfig(format='[%(asctime)s]: %(message)s', level = logging.INFO)
 
 session = requests.session()
 
-def login(username, password, org):
+def login(username, password, org, hostbase):
 
 	url = f"{hostbase}/{org}/servlet/cp_login"
 	
@@ -77,7 +77,11 @@ def login(username, password, org):
 		"FLLICENSECF" : "KO"
 	}
 
+	logging.info(f"posting login to URL {url}")
+
 	r = session.post(url, data=data, headers=headers, allow_redirects=False)
+
+	logging.info(f"Got headers for location {r.headers.get("Location")}")
 
 	if r.status_code == 302 and r.headers.get("Location") == f"../../{org}/servlet/../jsp/home.jsp":
 		logging.info(f"Authentication succesful for user {username}")
@@ -87,34 +91,14 @@ def login(username, password, org):
 	return False
 
 
-def downloadDocuments(org):
+def downloadDocuments(org, output_dir, hostbase):
 
-	url = f"{hostbase}/{org}/jsp/ushp_one_column_model.jsp"
+	url = f"{hostbase}/{org}/jsp/ushp_wfolderem_portlet.jsp"
 
 	m_cID = None
 	cmdhash = None
 
-	data = {
-		"containerCode" : "MYDESK",
-		"currentPageCode" : "1961",
-		"currentPageType" : "C",
-		"currentPageOwner" : "12",
-		"currentAssocRow" : "3",
-		"currentAllowedUser" : "0",
-		"currentUserAssoc" : "0",
-		"currentPageName" : "MySpace",
-		"flpagehr" : "S",
-		"SPParentObjId" : "",
-		"PageletId" : "",
-		"containerCode" : "MYDESK",
-		"pTitle" : "My+Workspace",
-		"SPParentObjId" : "",
-		"PageletId" : "",
-		"m_cParameterCache" : "",
-		"clientsideinclusion" : "true"
-	}
-
-	r = session.post(url,data=data,headers=headers)
+	r = session.get(url)
 
 	if r.status_code == 200:
 		res = re.findall(r"this.splinker7.m_cID='([a-z0-9]+)';",r.content.decode())
@@ -123,7 +107,7 @@ def downloadDocuments(org):
 		cmdhash = res and res[0] or None
 
 	if m_cID == None or cmdhash == None:
-		logger.error("Something wrong happened when retrieveing m_cID and cmdhash. Aborting")
+		logging.error("Something wrong happened when retrieveing m_cID and cmdhash. Aborting")
 		return
 
 	url = f"{hostbase}/{org}/servlet/SQLDataProviderServer"
@@ -158,9 +142,13 @@ def downloadDocuments(org):
 	
 	url = f"{hostbase}/{org}/servlet/ushp_bexecdoc"
 	
+	# Create output directory if it doesn't exist
+	os.makedirs(output_dir, exist_ok=True)
+
 	for x in sqlData["Data"][0:-1]:
 		logging.info(f"Downloading document \"{x[1]}\"")
-		with open(f"{x[1].replace(' ','_')}.pdf","wb") as fp:
+		filepath = os.path.join(output_dir, f"{x[1].replace(' ','_')}.pdf")
+		with open(filepath, "wb") as fp:
 			data.update({"idfolder" : x[0]})
 			r = session.post(url, data=data, headers=headers)
 			if r.status_code == 200:
@@ -173,5 +161,8 @@ if __name__ == "__main__":
 
 	args = parser.parse_args()
 
-	if login(args.username,args.password, args.org):
-		downloadDocuments(args.org)
+	# Get password securely if not provided via command line
+	password = args.password if args.password else getpass.getpass("Password: ")
+
+	if login(args.username, password, args.org, args.host):
+		downloadDocuments(args.org, args.output_dir, args.host)
